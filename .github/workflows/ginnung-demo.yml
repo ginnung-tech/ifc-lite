@@ -83,6 +83,21 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
+      # The Rust-built WASM modules, so a machine without the Rust toolchain
+      # can run the viewer's dev server (`vite`) for fast iteration: unzip
+      # these four folders into packages/wasm/ and run `pnpm --filter
+      # @ifc-lite/viewer dev`. They are gitignored build output.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ginnung-demo-wasm
+          path: |
+            packages/wasm/pkg
+            packages/wasm/pkg-rhino
+            packages/wasm/pkg-diff
+            packages/wasm/pkg-retained
+          retention-days: 14
+          if-no-files-found: warn
+
   deploy:
     needs: build
     # Off until the Pages project exists and its name is set as a repository
