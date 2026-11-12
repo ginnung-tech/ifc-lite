@@ -1,0 +1,109 @@
+# Ginnung demo viewer: the stock viewer plus the Ginnung additions, built in CI
+# and (once a Cloudflare Pages project is configured) deployed to it.
+#
+# This file exists only on the `ginnung/demo` branch of the ginnung-tech fork;
+# it is not meant for upstream. It runs on a push to that branch and by hand.
+#
+# Why CI builds it: the viewer needs two Rust-built WASM modules (`diff` and
+# `rhino`) that the published @ifc-lite/wasm package does not carry, so a plain
+# `pnpm install && pnpm dev` does not work on a machine without the Rust
+# toolchain. This is the same toolchain and script upstream's CI uses.
+#
+# Two outputs:
+#   1. ALWAYS: the built viewer (apps/viewer/dist) as the artifact
+#      `ginnung-demo-viewer`, for local testing: unzip, serve the folder.
+#   2. ONLY when the repository variable GINNUNG_DEMO_PAGES_PROJECT is set: a
+#      deploy of that same build to the named Cloudflare Pages project. It
+#      needs the secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID and
+#      fails with a message saying so when they are missing.
+name: Ginnung demo viewer
+
+on:
+  push:
+    branches:
+      - ginnung/demo
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ginnung-demo
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          lfs: false
+          persist-credentials: false
+
+      # The version comes from package.json's `packageManager` field.
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # Rust (rust-toolchain.toml) + wasm-pack, with the cargo cache. This
+      # branch is not main, so the cache is written from here explicitly.
+      - name: Setup the WASM build toolchain
+        uses: ./.github/actions/setup-wasm-build
+        with:
+          cache-prefix: ginnung-demo
+          shared-key: ginnung-demo
+          save-if: 'true'
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build the WASM modules
+        run: bash scripts/build-wasm.sh
+
+      # The viewer's dependency packages, without re-running the WASM build
+      # that just finished, then the viewer itself.
+      - name: Build the viewer's packages
+        run: pnpm turbo build --filter='@ifc-lite/viewer^...' --filter='!@ifc-lite/wasm' --concurrency=2
+
+      - name: Build the viewer
+        run: pnpm --filter @ifc-lite/viewer build
+
+      # A single-page app: any path that is not a file serves index.html (the
+      # BCF sign-in returns to /oauth/bcf/callback).
+      - name: SPA fallback
+        run: '[ -f apps/viewer/dist/_redirects ] || echo "/* /index.html 200" > apps/viewer/dist/_redirects'
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ginnung-demo-viewer
+          path: apps/viewer/dist
+          retention-days: 14
+          if-no-files-found: error
+
+  deploy:
+    needs: build
+    # Off until the Pages project exists and its name is set as a repository
+    # variable. Variables are readable here; secrets are checked in the step.
+    if: ${{ vars.GINNUNG_DEMO_PAGES_PROJECT != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ginnung-demo-viewer
+          path: dist
+
+      - name: Deploy to Cloudflare Pages
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PAGES_PROJECT: ${{ vars.GINNUNG_DEMO_PAGES_PROJECT }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error::Set the repository secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID to deploy to $PAGES_PROJECT."
+            exit 1
+          fi
+          npx --yes wrangler@4 pages deploy dist --project-name "$PAGES_PROJECT" --branch main --commit-message "ginnung demo ${GITHUB_SHA}"
