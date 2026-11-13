@@ -70,7 +70,7 @@ function Tool({ cde, app }: { cde: string; app: string }) {
     const ids = selectedGlobalIds(useViewerStore.getState() as never);
     setSelCount(ids.globalIds.length);
     setTruncated(ids.truncated);
-    if (appReady.current) post(selectionMessage(ids.globalIds, modelRef()));
+    if (appReady.current) post(selectionMessage(ids.globalIds, modelRef(), ids.elements));
   }, [post, modelRef]);
 
   /** Download a version and make it the open model, replacing the previous Ginnung model. */

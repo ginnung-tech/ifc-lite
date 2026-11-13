@@ -39,7 +39,19 @@
       "properties": {
         "v": {"const": 1}, "type": {"const": "selection"},
         "model": {"$ref": "#/$defs/modelRef"},
-        "global_ids": {"type": "array", "maxItems": 512, "uniqueItems": true, "items": {"$ref": "#/$defs/globalId"}}
+        "global_ids": {"type": "array", "maxItems": 512, "uniqueItems": true, "items": {"$ref": "#/$defs/globalId"}},
+        "elements": {
+          "description": "What the viewer knows about the selected elements, so the app can name them in the request (the awesome bar shows `Name` the way it does for its own selection). Optional; every `global_id` here is also in `global_ids`; an element the viewer cannot name is simply left out.",
+          "type": "array", "maxItems": 512,
+          "items": {
+            "type": "object", "additionalProperties": false, "required": ["global_id"],
+            "properties": {
+              "global_id": {"$ref": "#/$defs/globalId"},
+              "name": {"type": "string", "maxLength": 200},
+              "ifc_class": {"type": "string", "pattern": "^Ifc[A-Za-z0-9]{1,80}$"}
+            }
+          }
+        }
       }
     },
     "modelUpdated": {
