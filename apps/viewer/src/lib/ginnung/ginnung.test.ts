@@ -36,6 +36,14 @@ test('viewer-embed contract: every invalid fixture is refused by the strict pars
   assert.equal(parseAppMessage({ v: 1, type: 'ready', auth: 'signed-in', token: 'x' }).ok, false);
 });
 
+test('selectionMessage only describes elements that are in the selection, and never sends a class that is not an IFC class', () => {
+  assert.equal(selectionMessage([G1], undefined, [{ global_id: G2, name: 'not selected' }]).elements, undefined);
+  assert.deepEqual(
+    selectionMessage([G1], undefined, [{ global_id: G1, name: 'Wall', ifc_class: 'wall; drop' }]).elements,
+    [{ global_id: G1, name: 'Wall' }],
+  );
+});
+
 test('selectionMessage refuses what the contract refuses instead of sending it', () => {
   assert.throws(() => selectionMessage(['short']), TypeError);
   assert.throws(() => selectionMessage(Array.from({ length: 513 }, (_, i) => String(i).padStart(22, 'a'))), RangeError);
