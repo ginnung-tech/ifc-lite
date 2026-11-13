@@ -268,7 +268,11 @@ export default defineConfig(({ mode }) => {
   server: {
     port: 3000,
     headers: {
-      'Cross-Origin-Opener-Policy': 'same-origin',
+      // `same-origin` cuts `window.opener` for every cross-origin popup, so a
+      // tool that opens another site in a popup and talks to it with
+      // postMessage (VITE_GINNUNG_APP_URL) needs `same-origin-allow-popups`,
+      // which keeps cross-origin isolation (SharedArrayBuffer) intact.
+      'Cross-Origin-Opener-Policy': env.VITE_GINNUNG_APP_URL ? 'same-origin-allow-popups' : 'same-origin',
       // Allows third-party no-cors resources like Stripe.js while preserving
       // cross-origin isolation in modern browsers.
       'Cross-Origin-Embedder-Policy': 'credentialless',
