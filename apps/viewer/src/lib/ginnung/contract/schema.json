@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ginnung/viewer-embed",
+  "title": "viewer-embed: postMessage between a BIM viewer and the Ginnung app popup",
+  "description": "Draft 2026-11-13. The viewer opens the Ginnung app in a popup (window.open) and the two talk through window.postMessage. Both ends check event.source (the other window object) AND the exact event.origin, and always post to an explicit target origin, never '*'. Every message carries `v: 1` and a `type`; unknown types and extra fields are dropped with one warning.",
+  "$defs": {
+    "uuid": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
+    "globalId": {"type": "string", "pattern": "^[0-9A-Za-z_$]{22}$"},
+    "project": {"type": "string", "pattern": "^P[0-9]{4,6}$"},
+    "ready": {
+      "description": "app -> viewer, once the app is loaded and its session state is known. The viewer answers with `hello`.",
+      "type": "object", "additionalProperties": false, "required": ["v", "type", "auth"],
+      "properties": {
+        "v": {"const": 1}, "type": {"const": "ready"},
+        "auth": {"enum": ["signed-in", "signed-out"]},
+        "project": {"$ref": "#/$defs/project"}
+      }
+    },
+    "hello": {
+      "description": "viewer -> app. Tells the app the viewer is there and which model it shows. The app only trusts messages after a hello from its opener.",
+      "type": "object", "additionalProperties": false, "required": ["v", "type"],
+      "properties": {
+        "v": {"const": 1}, "type": {"const": "hello"},
+        "model": {"$ref": "#/$defs/modelRef"}
+      }
+    },
+    "modelRef": {
+      "description": "The model the viewer shows. `document_id` and `version_index` are the Ginnung store's (contract models) when the model came from Ginnung; absent for a file opened locally.",
+      "type": "object", "additionalProperties": false, "required": ["name"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 200},
+        "document_id": {"$ref": "#/$defs/uuid"},
+        "version_index": {"type": "integer", "minimum": 1}
+      }
+    },
+    "selection": {
+      "description": "viewer -> app. The viewer's current selection, sent on every change (an empty list clears it) and once after `ready`. At most 512 GlobalIds (the cap of the tasks viewpoint).",
+      "type": "object", "additionalProperties": false, "required": ["v", "type", "global_ids"],
+      "properties": {
+        "v": {"const": 1}, "type": {"const": "selection"},
+        "model": {"$ref": "#/$defs/modelRef"},
+        "global_ids": {"type": "array", "maxItems": 512, "uniqueItems": true, "items": {"$ref": "#/$defs/globalId"}}
+      }
+    },
+    "modelUpdated": {
+      "description": "app -> viewer. A new version of a model was committed in the Ginnung store (a Gróa task finished, a build committed). The viewer fetches it from the Ginnung source (contract models) and loads it.",
+      "type": "object", "additionalProperties": false, "required": ["v", "type", "project", "document_id", "version_index"],
+      "properties": {
+        "v": {"const": 1}, "type": {"const": "model.updated"},
+        "project": {"$ref": "#/$defs/project"},
+        "document_id": {"$ref": "#/$defs/uuid"},
+        "version_index": {"type": "integer", "minimum": 1}
+      }
+    },
+    "message": {
+      "oneOf": [
+        {"$ref": "#/$defs/ready"}, {"$ref": "#/$defs/hello"},
+        {"$ref": "#/$defs/selection"}, {"$ref": "#/$defs/modelUpdated"}
+      ]
+    }
+  }
+}
