@@ -27,5 +27,7 @@ export const ginnungStrings = {
   bcfFailed: 'not connected',
   bcfBadAddress: 'The BCF address could not be derived from the document server address.',
   openWindow: 'Open in a window',
+  paneNotConnected: 'Not connected. Connect to Ginnung in Settings to use it here.',
+  openSettings: 'Open Ginnung settings',
   appBlocked: 'The browser blocked the Ginnung window. Allow pop-ups for this page and try again.',
 } as const;

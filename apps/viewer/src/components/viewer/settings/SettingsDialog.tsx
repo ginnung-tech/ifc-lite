@@ -8,13 +8,14 @@
  * `openSettings(section?)` (see `lib/settings/open-settings.ts`).
  */
 
-import { useEffect, useState, useSyncExternalStore, type ComponentType } from 'react';
+import { lazy, Suspense, useEffect, useState, useSyncExternalStore, type ComponentType } from 'react';
 import { Dialog, DialogBody, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useTranslation, type TranslationKey } from '@/i18n';
 import {
   EVENT_OPEN_SETTINGS,
   SETTINGS_SECTIONS,
+  type ExtraSettingsSection,
   type OpenSettingsDetail,
   type SettingsSection,
 } from '@/lib/settings/open-settings';
@@ -32,10 +33,19 @@ const SECTIONS: Record<SettingsSection, { label: TranslationKey; Body: Component
   collaboration: { label: 'settings.sections.collaboration', Body: CollaborationSection },
 };
 
+// The optional Ginnung connection: a tab only when the app is configured, loaded on its own.
+// (A static import would change the production chunk graph, see App.tsx.)
+const GINNUNG_CONFIGURED = !!import.meta.env.VITE_GINNUNG_APP_URL;
+const GinnungSettings = lazy(() => import('@/components/ginnung/GinnungSettings').then((m) => ({ default: m.GinnungSettings })));
+const GinnungBody = () => <Suspense fallback={null}><GinnungSettings /></Suspense>;
+const GINNUNG_TAB_TEXT = 'Ginnung';
+type SectionId = SettingsSection | ExtraSettingsSection;
+const SECTION_IDS: readonly SectionId[] = GINNUNG_CONFIGURED ? [...SETTINGS_SECTIONS, 'ginnung'] : SETTINGS_SECTIONS;
+
 export interface SettingsDialogProps {
   open: boolean;
-  section: SettingsSection;
-  onSectionChange: (section: SettingsSection) => void;
+  section: SectionId;
+  onSectionChange: (section: SectionId) => void;
   onOpenChange: (open: boolean) => void;
 }
 
@@ -89,18 +99,18 @@ export function SettingsDialog({ open, section, onSectionChange, onOpenChange }:
         <Tabs
           orientation={wide ? 'vertical' : 'horizontal'}
           value={section}
-          onValueChange={(value) => { const next = SETTINGS_SECTIONS.find((id) => id === value); if (next) onSectionChange(next); }}
+          onValueChange={(value) => { const next = SECTION_IDS.find((id) => id === value); if (next) onSectionChange(next); }}
           className="flex min-h-0 flex-1 flex-col sm:flex-row sm:gap-4 sm:px-5 sm:pb-5 sm:pt-3"
         >
           <TabsList scrollable className={TAB_LIST_CLASS}>
-            {SETTINGS_SECTIONS.map((id) => (
+            {SECTION_IDS.map((id) => (
               <TabsTrigger key={id} value={id} className={TAB_TRIGGER_CLASS}>
-                {t(SECTIONS[id].label)}
+                {id === 'ginnung' ? GINNUNG_TAB_TEXT : t(SECTIONS[id].label)}
               </TabsTrigger>
             ))}
           </TabsList>
-          {SETTINGS_SECTIONS.map((id) => {
-            const { Body } = SECTIONS[id];
+          {SECTION_IDS.map((id) => {
+            const Body = id === 'ginnung' ? GinnungBody : SECTIONS[id].Body;
             return (
               <DialogBody key={id} asChild>
                 <TabsContent value={id} className="mt-0 min-w-0 px-5 pb-5 pt-3 sm:max-h-[60vh] sm:p-0">
@@ -118,11 +128,11 @@ export function SettingsDialog({ open, section, onSectionChange, onOpenChange }:
 /** The mounted instance: opens on `openSettings()`, on the section it names. */
 export function SettingsDialogHost() {
   const [open, setOpen] = useState(false);
-  const [section, setSection] = useState<SettingsSection>(SETTINGS_SECTIONS[0]);
+  const [section, setSection] = useState<SectionId>(SETTINGS_SECTIONS[0]);
   useEffect(() => {
     const onOpen = (e: Event) => {
       const requested = (e as CustomEvent<OpenSettingsDetail | undefined>).detail?.section;
-      setSection(requested ?? SETTINGS_SECTIONS[0]);
+      setSection(requested === 'ginnung' && !GINNUNG_CONFIGURED ? SETTINGS_SECTIONS[0] : (requested ?? SETTINGS_SECTIONS[0]));
       setOpen(true);
     };
     window.addEventListener(EVENT_OPEN_SETTINGS, onOpen);
