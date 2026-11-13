@@ -8,11 +8,6 @@ import { ginnungStrings as S } from '@/lib/ginnung/strings';
 
 const APP = import.meta.env.VITE_GINNUNG_APP_URL as string | undefined;
 
-/** True when the assistant pane should show the Ginnung app. */
-export function ginnungFrameConfigured(): boolean {
-  return !!APP && frameAddress(APP) !== null;
-}
-
 /**
  * The Ginnung app, in a frame, as the body of the assistant pane. It reaches
  * the app's session cookie only when this viewer is hosted on the same site as

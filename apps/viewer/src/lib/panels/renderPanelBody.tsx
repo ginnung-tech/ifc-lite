@@ -17,7 +17,7 @@ import { AssistantSourceContext } from '@/components/viewer/assistant/AssistantA
 import { lazy, Suspense, type ReactNode } from 'react';
 import { panelModelGateMode, type WorkspacePanelId } from './registry';
 import { ChunkErrorBoundary } from '@/components/ChunkErrorBoundary';
-import { GinnungFrame, ginnungFrameConfigured } from '@/components/ginnung/GinnungFrame';
+const GinnungFrame = lazy(() => import('@/components/ginnung/GinnungFrame').then((m) => ({ default: m.GinnungFrame })));
 import { HierarchyPanel } from '@/components/viewer/HierarchyPanel';
 import { PropertiesPanel } from '@/components/viewer/PropertiesPanel';
 const InfluxPanel = lazy(() => import('@/components/viewer/influx/InfluxPanel').then(module => ({ default: module.InfluxPanel })));
@@ -177,8 +177,8 @@ function panelBody(id: WorkspacePanelId, onClose: () => void): ReactNode {
     // pane / float / pop-out, but the case keeps the id to body map exhaustive.
     case 'influx': return <ChunkErrorBoundary key="influx" label="InfluxDB 2"><Suspense fallback={null}><InfluxPanel /></Suspense></ChunkErrorBoundary>;
     // With the optional Ginnung app configured, the pane shows it (a frame); without it, the assistant as before.
-    case 'assistant': return ginnungFrameConfigured()
-      ? <GinnungFrame />
+    case 'assistant': return import.meta.env.VITE_GINNUNG_APP_URL
+      ? <Suspense fallback={null}><GinnungFrame /></Suspense>
       : <ChunkErrorBoundary label="Assistant panel"><Suspense fallback={null}><AssistantPanel /></Suspense></ChunkErrorBoundary>;
     case 'appearance': return <AppearancePanelBody />;
     case 'hierarchy': return <HierarchyPanel />;
