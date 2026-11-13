@@ -5,8 +5,6 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { useViewerStore } from '@/store';
 import { useIfcLoader } from '@/hooks/useIfcLoader';
-import { pullBcfServerProject, signInWithToken } from '@/services/bcf-server';
-import { clearBcfServerConfig } from '@/services/bcf-server-config';
 import { GinnungApi, GinnungApiError, type DocumentRow, type VersionRow } from '@/lib/ginnung/api';
 import { bcfBaseFrom, docsToLoad, modelForSelection, modelRefOf, newerHeads, type LoadedDoc } from '@/lib/ginnung/connection-logic';
 import { getFramePeer, subscribeFramePeer } from '@/lib/ginnung/peer';
@@ -92,6 +90,8 @@ function Controller({ cde, app }: { cde: string; app: string }) {
     const project = projectRef.current;
     if (!project) return;
     try {
+      // Loaded on use: a static import changes the production chunk graph (see App.tsx).
+      const { pullBcfServerProject } = await import('@/services/bcf-server');
       const result = await pullBcfServerProject(project.id, project.name);
       useViewerStore.getState().setBcfProject(result.project);
       setPaneState({ bcf: { state: 'connected', message: '', topics: result.project.topics.size } });
@@ -106,6 +106,7 @@ function Controller({ cde, app }: { cde: string; app: string }) {
     try {
       const base = bcfBaseFrom(cde);
       if (!base) throw new Error(S.bcfBadAddress);
+      const { signInWithToken } = await import('@/services/bcf-server');
       await signInWithToken(base, token);
     } catch (e) {
       console.warn('[ginnung] BCF sign-in failed', e);
@@ -236,7 +237,7 @@ function Controller({ cde, app }: { cde: string; app: string }) {
     loaded.current = new Map();
     etag.current = undefined;
     writeToken('');
-    clearBcfServerConfig();
+    void import('@/services/bcf-server-config').then((m) => m.clearBcfServerConfig());
     useViewerStore.getState().setBcfProject(null);
     resetPaneState();
   }, []);
