@@ -21,11 +21,13 @@ import type { FileSourceProviderFactory } from './services/sources/source-host';
 import { Toaster } from './components/ui/toast';
 import { ChunkErrorBoundary } from './components/ChunkErrorBoundary';
 import { StaleDeploymentNotice } from './components/StaleDeploymentNotice';
-import { GinnungTool } from './components/ginnung/GinnungTool';
 import { LensRuntimeHost } from './components/viewer/LensRuntimeHost';
 import { Suspense, lazy, useEffect, useState } from 'react';
 import { Analytics } from '@vercel/analytics/react';
 
+// The optional Ginnung tool stays out of the boot path: it renders nothing unless
+// its addresses are configured, and then loads on its own.
+const GinnungTool = lazy(() => import('./components/ginnung/GinnungTool').then((m) => ({ default: m.GinnungTool })));
 // The /mcp marketing surface pulls in three.js (HeroScene / PlaygroundViewer)
 // and its own component tree — none of which the main `/` viewer route needs.
 // Statically importing McpLanding/McpPlayground dragged all of it into the
@@ -132,7 +134,7 @@ export function App({ sourceProviders }: AppProps = {}) {
               the status bar, rather than the whole window's here. */}
           <ViewerLayout />
           <StaleDeploymentNotice />
-          <GinnungTool />
+          {import.meta.env.VITE_GINNUNG_APP_URL && <Suspense fallback={null}><GinnungTool /></Suspense>}
           <Analytics />
         </SourceHostProvider>
       </ExtensionHostProvider>
