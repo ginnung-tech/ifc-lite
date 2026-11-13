@@ -26,12 +26,10 @@ export function subscribeFramePeer(l: () => void): () => void {
   return () => { listeners.delete(l); };
 }
 
-/** The framed app's address with the embed flag, or null when it is not a valid address. */
-export function frameAddress(app: string): string | null {
+/** The app's address as a clean absolute URL, or null when it is not one (so nothing invalid is framed). */
+export function appAddress(app: string): string | null {
   try {
-    const url = new URL(app);
-    url.searchParams.set('embedded', 'true');
-    return url.toString();
+    return new URL(app).toString();
   } catch {
     return null;
   }
