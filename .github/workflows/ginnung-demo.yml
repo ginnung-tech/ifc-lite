@@ -68,8 +68,13 @@ jobs:
       - name: Build the viewer's packages
         run: pnpm turbo build --filter='@ifc-lite/viewer^...' --filter='!@ifc-lite/wasm' --concurrency=2
 
+      # The optional Ginnung tool renders only when both addresses are set
+      # (repository variables; plain addresses, not secrets).
       - name: Build the viewer
         run: pnpm --filter @ifc-lite/viewer build
+        env:
+          VITE_GINNUNG_CDE_URL: ${{ vars.GINNUNG_CDE_URL }}
+          VITE_GINNUNG_APP_URL: ${{ vars.GINNUNG_APP_URL }}
 
       # A single-page app: any path that is not a file serves index.html (the
       # BCF sign-in returns to /oauth/bcf/callback).
