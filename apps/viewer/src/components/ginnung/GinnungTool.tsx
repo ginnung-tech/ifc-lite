@@ -2,67 +2,65 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { useCallback, useEffect, useRef } from 'react';
 import { useViewerStore } from '@/store';
 import { useIfcLoader } from '@/hooks/useIfcLoader';
-import { GinnungApi, GinnungApiError, type DocumentRow, type ProjectRow, type VersionRow } from '@/lib/ginnung/api';
-import { helloMessage, isFromApp, parseAppMessage, selectionMessage, type ModelRef } from '@/lib/ginnung/protocol';
+import { pullBcfServerProject, signInWithToken } from '@/services/bcf-server';
+import { clearBcfServerConfig } from '@/services/bcf-server-config';
+import { GinnungApi, GinnungApiError, type DocumentRow, type VersionRow } from '@/lib/ginnung/api';
+import { bcfBaseFrom, docsToLoad, modelForSelection, modelRefOf, newerHeads, type LoadedDoc } from '@/lib/ginnung/connection-logic';
 import { getFramePeer, subscribeFramePeer } from '@/lib/ginnung/peer';
+import { helloMessage, isFromApp, parseAppMessage, selectionMessage } from '@/lib/ginnung/protocol';
 import { selectedGlobalIds } from '@/lib/ginnung/selection';
 import { ginnungStrings as S } from '@/lib/ginnung/strings';
+import { getPaneState, registerPaneActions, resetPaneState, setPaneState } from '@/lib/ginnung/ui-store';
 
 const CDE = import.meta.env.VITE_GINNUNG_CDE_URL as string | undefined;
 const APP = import.meta.env.VITE_GINNUNG_APP_URL as string | undefined;
 const TOKEN_KEY = 'ginnung-demo.token';
 const FOLLOW_MS = 4000;
-
-interface Current { project: string; documentId: string; versionIndex: number; name: string; modelId: string; etag?: string }
+/** Every Nth follow tick also looks for documents added to the project. */
+const NEW_DOCS_EVERY = 5;
 
 function readToken(): string {
   try { return localStorage.getItem(TOKEN_KEY) ?? ''; } catch { return ''; }
 }
 function writeToken(v: string): void {
-  try { localStorage.setItem(TOKEN_KEY, v); } catch { /* private window: the token stays in memory only */ }
+  try { if (v) localStorage.setItem(TOKEN_KEY, v); else localStorage.removeItem(TOKEN_KEY); } catch { /* private window: memory only */ }
 }
 const say = (e: unknown): string => (e instanceof GinnungApiError ? e.message : e instanceof Error ? e.message : String(e));
 
 /**
- * Opens a Ginnung model in the viewer, follows its newest version, and opens
- * the Ginnung app in a popup that receives the viewer's selection and tells
- * the viewer when a task committed a new version (contract `viewer-embed`).
- * Rendered only when `VITE_GINNUNG_APP_URL` and `VITE_GINNUNG_CDE_URL` are set.
+ * The Ginnung connection, headless. One token connects both servers at once:
+ * the document server (every model of the project is loaded into the viewer and
+ * followed to its newest version) and the BCF server (the viewer's own BCF
+ * connection, topics pulled). It also speaks contract `viewer-embed` with the
+ * app, in the assistant pane's frame or in a popup. The pane (`GinnungPane`)
+ * only shows `ui-store` state and calls the actions registered here.
+ * Renders nothing, and only when both addresses are configured.
  */
 export function GinnungTool() {
   if (!CDE || !APP) return null;
-  return <Tool cde={CDE} app={APP} />;
+  return <Controller cde={CDE} app={APP} />;
 }
 
-function Tool({ cde, app }: { cde: string; app: string }) {
+function Controller({ cde, app }: { cde: string; app: string }) {
   const { loadFile } = useIfcLoader();
-  const [open, setOpen] = useState(false);
-  const [token, setToken] = useState(readToken);
-  const [api, setApi] = useState<GinnungApi | null>(null);
-  const [projects, setProjects] = useState<ProjectRow[]>([]);
-  const [project, setProject] = useState('');
-  const [docs, setDocs] = useState<DocumentRow[]>([]);
-  const [current, setCurrent] = useState<Current | null>(null);
-  const [error, setError] = useState('');
-  const [selCount, setSelCount] = useState(0);
-  const [truncated, setTruncated] = useState(false);
+  const apiRef = useRef<GinnungApi | null>(null);
+  const projectRef = useRef<{ id: string; name: string } | null>(null);
+  const loaded = useRef(new Map<string, LoadedDoc>());
+  const etag = useRef<string | undefined>(undefined);
   const popup = useRef<Window | null>(null);
   const appReady = useRef(false);
-  const currentRef = useRef<Current | null>(null);
-  currentRef.current = current;
+  const generation = useRef(0);
   const appOrigin = new URL(app).origin;
 
-  const modelRef = useCallback((): ModelRef | undefined => {
-    const c = currentRef.current;
-    return c ? { name: c.name, document_id: c.documentId, version_index: c.versionIndex } : undefined;
+  const publishModels = useCallback(() => {
+    setPaneState({ models: [...loaded.current.values()].map((d) => ({ name: d.name, versionIndex: d.versionIndex })) });
   }, []);
 
-  /** The app's window: the popup while it is open, else the frame in the assistant pane. */
+  // ── the app's window and the messages ────────────────────────────────────
+
   const peerWindow = useCallback((): Window | null => {
     const w = popup.current;
     if (w && !w.closed) return w;
@@ -73,65 +71,199 @@ function Tool({ cde, app }: { cde: string; app: string }) {
     peerWindow()?.postMessage(msg, appOrigin);
   }, [appOrigin, peerWindow]);
 
-  const sendSelection = useCallback(() => {
-    const ids = selectedGlobalIds(useViewerStore.getState() as never);
-    setSelCount(ids.globalIds.length);
-    setTruncated(ids.truncated);
-    if (appReady.current) post(selectionMessage(ids.globalIds, modelRef(), ids.elements));
-  }, [post, modelRef]);
+  const sendHello = useCallback(() => {
+    const first = loaded.current.values().next().value as LoadedDoc | undefined;
+    post(helloMessage(first ? modelRefOf(first) : undefined));
+  }, [post]);
 
-  /** Download a version and make it the open model, replacing the previous Ginnung model. */
-  const loadVersion = useCallback(async (a: GinnungApi, v: VersionRow, projectId: string, etag?: string) => {
+  const sendSelection = useCallback(() => {
+    const st = useViewerStore.getState();
+    const ids = selectedGlobalIds(st as never);
+    if (appReady.current) {
+      const selected = st.selectedEntities.length > 0 ? st.selectedEntities : st.selectedEntity ? [st.selectedEntity] : [];
+      const doc = modelForSelection(selected, loaded.current);
+      post(selectionMessage(ids.globalIds, doc ? modelRefOf(doc) : undefined, ids.elements));
+    }
+  }, [post]);
+
+  // ── the BCF leg: the viewer's own connection, same host, same token ──────
+
+  const refreshBcf = useCallback(async (): Promise<void> => {
+    const project = projectRef.current;
+    if (!project) return;
+    try {
+      const result = await pullBcfServerProject(project.id, project.name);
+      useViewerStore.getState().setBcfProject(result.project);
+      setPaneState({ bcf: { state: 'connected', message: '', topics: result.project.topics.size } });
+    } catch (e) {
+      console.warn('[ginnung] BCF topics could not be pulled', e);
+      setPaneState({ bcf: { state: 'failed', message: say(e), topics: 0 } });
+    }
+  }, []);
+
+  const connectBcf = useCallback(async (token: string): Promise<void> => {
+    setPaneState({ bcf: { state: 'connecting', message: '', topics: 0 } });
+    try {
+      const base = bcfBaseFrom(cde);
+      if (!base) throw new Error(S.bcfBadAddress);
+      await signInWithToken(base, token);
+    } catch (e) {
+      console.warn('[ginnung] BCF sign-in failed', e);
+      setPaneState({ bcf: { state: 'failed', message: say(e), topics: 0 } });
+      return;
+    }
+    await refreshBcf();
+  }, [cde, refreshBcf]);
+
+  // ── loading and following models ─────────────────────────────────────────
+
+  /** Download one version and show it, replacing the previous version of the same document. */
+  const showDoc = useCallback(async (a: GinnungApi, v: VersionRow, first: boolean): Promise<void> => {
     const bytes = await a.download(v.download);
-    const prev = currentRef.current;
+    const prev = loaded.current.get(v.document_id);
     if (prev) useViewerStore.getState().removeModel(prev.modelId);
     const modelId = crypto.randomUUID();
     const name = `${v.title || 'model'}`.replace(/\.ifc$/i, '') + '.ifc';
-    await loadFile(new File([bytes], name, { type: 'application/x-step' }), { kind: 'primary', modelId });
-    const next: Current = { project: projectId, documentId: v.document_id, versionIndex: v.version_index, name, modelId, etag };
-    currentRef.current = next;
-    setCurrent(next);
-    if (appReady.current) post(helloMessage({ name, document_id: v.document_id, version_index: v.version_index }));
-  }, [loadFile, post]);
+    const file = new File([bytes], name, { type: 'application/x-step' });
+    // A primary load replaces everything in the viewer: only when it is empty.
+    const primary = first && useViewerStore.getState().models.size === 0;
+    await loadFile(file, primary ? { kind: 'primary', modelId } : { kind: 'federated', modelId, name });
+    loaded.current.set(v.document_id, { documentId: v.document_id, modelId, name, versionIndex: v.version_index });
+    publishModels();
+  }, [loadFile, publishModels]);
 
-  const connect = useCallback(async () => {
-    setError('');
-    try {
-      const a = new GinnungApi(cde, token.trim());
-      const rows = await a.listProjects();
-      writeToken(token.trim());
-      setApi(a);
-      setProjects(rows);
-      setProject(rows[0]?.project_id ?? '');
-    } catch (e) { setError(say(e)); }
-  }, [cde, token]);
-
-  useEffect(() => {
-    if (!api || !project) { setDocs([]); return; }
-    let live = true;
-    api.listDocuments(project).then((d) => { if (live) setDocs(d); }).catch((e) => { if (live) setError(say(e)); });
-    return () => { live = false; };
-  }, [api, project]);
-
-  // Follow the newest version of the open model: one cheap conditional request every few seconds.
-  useEffect(() => {
-    if (!api || !current) return;
-    let busy = false;
-    const id = setInterval(async () => {
-      const c = currentRef.current;
-      if (busy || !c) return;
-      busy = true;
+  const loadProject = useCallback(async (a: GinnungApi, projectId: string, gen: number): Promise<void> => {
+    const rows: DocumentRow[] = await a.listDocuments(projectId);
+    if (gen !== generation.current) return;
+    let first = loaded.current.size === 0;
+    for (const row of docsToLoad(rows, loaded.current)) {
       try {
-        const res = await api.heads([c.documentId], c.etag);
-        const head = res?.versions.find((v) => v.document_id === c.documentId);
-        if (res && head && head.version_index > c.versionIndex) await loadVersion(api, head, c.project, res.etag);
-        else if (res && currentRef.current === c) setCurrent({ ...c, etag: res.etag });
-      } catch (e) { setError(say(e)); } finally { busy = false; }
+        await showDoc(a, row.head, first);
+        first = false;
+      } catch (e) {
+        // One model that cannot be shown must not hide the rest.
+        console.warn('[ginnung] a model could not be loaded', row.document_id, e);
+        setPaneState({ error: `${row.title}: ${say(e)}` });
+      }
+      if (gen !== generation.current) return;
+    }
+    sendHello();
+  }, [showDoc, sendHello]);
+
+  // Follow: one conditional request every few seconds; now and then look for new documents.
+  useEffect(() => {
+    let busy = false;
+    let tick = 0;
+    const id = setInterval(async () => {
+      const a = apiRef.current;
+      const project = projectRef.current;
+      if (busy || !a || !project || loaded.current.size === 0) return;
+      busy = true;
+      const gen = generation.current;
+      try {
+        tick += 1;
+        const res = await a.heads([...loaded.current.keys()], etag.current);
+        if (gen !== generation.current) return;
+        let changed = false;
+        if (res) {
+          etag.current = res.etag;
+          for (const docId of newerHeads(res.versions, loaded.current)) {
+            const head = res.versions.find((v) => v.document_id === docId);
+            if (head) { await showDoc(a, head, false); changed = true; }
+          }
+        }
+        if (tick % NEW_DOCS_EVERY === 0) {
+          const before = loaded.current.size;
+          await loadProject(a, project.id, gen);
+          if (loaded.current.size !== before) { etag.current = undefined; changed = true; }
+        }
+        if (changed) { sendHello(); void refreshBcf(); }
+      } catch (e) {
+        setPaneState({ error: say(e) });
+      } finally { busy = false; }
     }, FOLLOW_MS);
     return () => clearInterval(id);
-  }, [api, current?.documentId, loadVersion]);
+  }, [showDoc, loadProject, sendHello, refreshBcf]);
 
-  // Messages from the popup: only from that window and exactly its origin.
+  // ── actions the pane can ask for ─────────────────────────────────────────
+
+  const connect = useCallback(async (rawToken: string): Promise<void> => {
+    const token = rawToken.trim();
+    if (!token) return;
+    const gen = ++generation.current;
+    setPaneState({ phase: 'connecting', error: '', bcf: { state: 'off', message: '', topics: 0 } });
+    try {
+      const a = new GinnungApi(cde, token);
+      const rows = await a.listProjects();
+      if (gen !== generation.current) return;
+      if (rows.length === 0) throw new Error(S.noProjects);
+      apiRef.current = a;
+      writeToken(token);
+      const projects = rows.map((p) => ({ id: p.project_id, name: p.name }));
+      const first = projects[0]!;
+      projectRef.current = first;
+      loaded.current = new Map();
+      etag.current = undefined;
+      setPaneState({ phase: 'connected', projects, projectId: first.id, models: [] });
+      // Both servers at once: a failure on one is reported on its own and does not stop the other.
+      await Promise.allSettled([loadProject(a, first.id, gen), connectBcf(token)]);
+    } catch (e) {
+      if (gen !== generation.current) return;
+      apiRef.current = null;
+      if (e instanceof GinnungApiError && e.status === 401) writeToken('');
+      setPaneState({ phase: 'disconnected', error: say(e) });
+    }
+  }, [cde, loadProject, connectBcf]);
+
+  const selectProject = useCallback(async (id: string): Promise<void> => {
+    const a = apiRef.current;
+    const project = getPaneState().projects.find((p) => p.id === id);
+    if (!a || !project) return;
+    const gen = ++generation.current;
+    const st = useViewerStore.getState();
+    for (const d of loaded.current.values()) st.removeModel(d.modelId);
+    loaded.current = new Map();
+    etag.current = undefined;
+    projectRef.current = project;
+    setPaneState({ projectId: id, models: [], error: '' });
+    await Promise.allSettled([loadProject(a, id, gen), refreshBcf()]);
+  }, [loadProject, refreshBcf]);
+
+  const disconnect = useCallback((): void => {
+    generation.current += 1;
+    apiRef.current = null;
+    projectRef.current = null;
+    loaded.current = new Map();
+    etag.current = undefined;
+    writeToken('');
+    clearBcfServerConfig();
+    useViewerStore.getState().setBcfProject(null);
+    resetPaneState();
+  }, []);
+
+  const openWindow = useCallback((): void => {
+    const width = 420;
+    const left = Math.max(0, window.screenX + window.outerWidth - width);
+    const w = window.open(app, 'ginnung-app', `popup=yes,width=${width},height=${window.outerHeight},left=${left},top=${window.screenY}`);
+    if (!w) { setPaneState({ error: S.appBlocked }); return; }
+    popup.current = w;
+    appReady.current = false;
+  }, [app]);
+
+  useEffect(() => {
+    registerPaneActions({ connect, disconnect, selectProject, openWindow });
+    return () => registerPaneActions(null);
+  }, [connect, disconnect, selectProject, openWindow]);
+
+  // A saved token reconnects on its own; a revoked one says so in the pane.
+  useEffect(() => {
+    const saved = readToken();
+    if (saved) void connect(saved);
+    return () => { generation.current += 1; };
+  }, [connect]);
+
+  // ── messages from the app: only from its window, at its exact origin ─────
+
   useEffect(() => {
     const onMessage = (ev: MessageEvent) => {
       if (!isFromApp(ev, popup.current, appOrigin) && !isFromApp(ev, getFramePeer(), appOrigin)) return;
@@ -140,82 +272,33 @@ function Tool({ cde, app }: { cde: string; app: string }) {
       const msg = parsed.msg;
       if (msg.type === 'ready') {
         appReady.current = true;
-        post(helloMessage(modelRef()));
+        sendHello();
         sendSelection();
-      } else if (api && currentRef.current?.documentId === msg.documentId && msg.versionIndex > currentRef.current.versionIndex) {
-        const c = currentRef.current;
-        api.heads([c.documentId]).then((res) => {
-          const head = res?.versions.find((v) => v.document_id === c.documentId);
-          if (res && head && head.version_index >= msg.versionIndex) return loadVersion(api, head, c.project, res.etag);
-        }).catch((e) => setError(say(e)));
+        return;
+      }
+      const a = apiRef.current;
+      const known = loaded.current.get(msg.documentId);
+      if (a && known && msg.versionIndex > known.versionIndex) {
+        a.heads([msg.documentId]).then(async (res) => {
+          const head = res?.versions.find((v) => v.document_id === msg.documentId);
+          if (head && head.version_index >= msg.versionIndex) {
+            await showDoc(a, head, false);
+            sendHello();
+            void refreshBcf();
+          }
+        }).catch((e) => setPaneState({ error: say(e) }));
       }
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [api, appOrigin, loadVersion, modelRef, post, sendSelection]);
+  }, [appOrigin, sendHello, sendSelection, showDoc, refreshBcf]);
 
   useEffect(() => useViewerStore.subscribe(sendSelection), [sendSelection]);
 
   // A frame that (re)loads is a new app instance: it announces itself again.
   useEffect(() => subscribeFramePeer(() => { appReady.current = false; }), []);
 
-  const openApp = useCallback(() => {
-    setError('');
-    const width = 420;
-    const left = Math.max(0, window.screenX + window.outerWidth - width);
-    const w = window.open(app, 'ginnung-app', `popup=yes,width=${width},height=${window.outerHeight},left=${left},top=${window.screenY}`);
-    if (!w) { setError(S.appBlocked); return; }
-    popup.current = w;
-    appReady.current = false;
-  }, [app]);
-
   useEffect(() => () => { popup.current?.close(); }, []);
 
-  if (!open) {
-    return (
-      <div className="fixed bottom-4 left-4 z-50">
-        <Button size="sm" onClick={() => setOpen(true)}>{S.tool}</Button>
-      </div>
-    );
-  }
-
-  return (
-    <section aria-label={S.title} className="fixed bottom-4 left-4 z-50 w-80 max-w-[calc(100vw-2rem)] space-y-2 rounded-md border bg-background p-3 text-sm shadow-lg">
-      <div className="flex items-center justify-between">
-        <strong>{S.title}</strong>
-        <Button size="sm" variant="ghost" onClick={() => setOpen(false)}>{S.close}</Button>
-      </div>
-      {!api ? (
-        <>
-          <label className="block text-xs text-muted-foreground" htmlFor="ginnung-token">{S.token}</label>
-          <Input id="ginnung-token" type="password" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value)} />
-          <p className="text-xs text-muted-foreground">{S.tokenHint}</p>
-          <Button size="sm" disabled={!token.trim()} onClick={() => void connect()}>{S.connect}</Button>
-        </>
-      ) : (
-        <>
-          <label className="block text-xs text-muted-foreground" htmlFor="ginnung-project">{S.project}</label>
-          <select id="ginnung-project" className="w-full rounded border bg-background p-1" value={project} onChange={(e) => setProject(e.target.value)}>
-            {projects.map((p) => <option key={p.project_id} value={p.project_id}>{p.name}</option>)}
-          </select>
-          <div className="text-xs text-muted-foreground">{S.models}</div>
-          <ul className="max-h-40 space-y-1 overflow-auto">
-            {docs.length === 0 && <li className="text-xs">{S.noModels}</li>}
-            {docs.map((d) => (
-              <li key={d.document_id} className="flex items-center justify-between gap-2">
-                <span className="truncate">{d.title} · {S.version} {d.head_index}</span>
-                <Button size="sm" variant="outline" onClick={() => void loadVersion(api, d.head, project).catch((e) => setError(say(e)))}>{S.open}</Button>
-              </li>
-            ))}
-          </ul>
-          {current && <p className="text-xs">{S.following}: {current.name} · {S.version} {current.versionIndex}</p>}
-          <div className="flex items-center gap-2">
-            <Button size="sm" onClick={openApp}>{S.openApp}</Button>
-            <span className="text-xs text-muted-foreground">{selCount} {S.selected}{truncated ? ` · ${S.truncated}` : ''}</span>
-          </div>
-        </>
-      )}
-      {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
-    </section>
-  );
+  return null;
 }

@@ -4,17 +4,16 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { frameAddress, getFramePeer, setFramePeer, subscribeFramePeer } from './peer';
+import { appAddress, getFramePeer, setFramePeer, subscribeFramePeer } from './peer';
 
-test('frameAddress adds the embed flag and keeps the rest of the address', () => {
-  assert.equal(frameAddress('https://app.example/ginnung/'), 'https://app.example/ginnung/?embedded=true');
-  assert.equal(frameAddress('https://app.example/ginnung/?lod=350'), 'https://app.example/ginnung/?lod=350&embedded=true');
-  assert.equal(frameAddress('https://app.example/ginnung/?embedded=false'), 'https://app.example/ginnung/?embedded=true');
+test('appAddress keeps the address as given, normalised', () => {
+  assert.equal(appAddress('https://app.example/ginnung/'), 'https://app.example/ginnung/');
+  assert.equal(appAddress('https://app.example/ginnung/?lod=350'), 'https://app.example/ginnung/?lod=350');
 });
 
-test('frameAddress refuses something that is not an address instead of framing it', () => {
-  assert.equal(frameAddress('not a url'), null);
-  assert.equal(frameAddress(''), null);
+test('appAddress refuses something that is not an address instead of framing it', () => {
+  assert.equal(appAddress('not a url'), null);
+  assert.equal(appAddress(''), null);
 });
 
 test('the frame peer is held, announced to subscribers on change only, and cleared', () => {
