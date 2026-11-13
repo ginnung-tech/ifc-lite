@@ -9,6 +9,7 @@ import { useViewerStore } from '@/store';
 import { useIfcLoader } from '@/hooks/useIfcLoader';
 import { GinnungApi, GinnungApiError, type DocumentRow, type ProjectRow, type VersionRow } from '@/lib/ginnung/api';
 import { helloMessage, isFromApp, parseAppMessage, selectionMessage, type ModelRef } from '@/lib/ginnung/protocol';
+import { getFramePeer, subscribeFramePeer } from '@/lib/ginnung/peer';
 import { selectedGlobalIds } from '@/lib/ginnung/selection';
 import { ginnungStrings as S } from '@/lib/ginnung/strings';
 
@@ -61,10 +62,16 @@ function Tool({ cde, app }: { cde: string; app: string }) {
     return c ? { name: c.name, document_id: c.documentId, version_index: c.versionIndex } : undefined;
   }, []);
 
-  const post = useCallback((msg: Record<string, unknown>) => {
+  /** The app's window: the popup while it is open, else the frame in the assistant pane. */
+  const peerWindow = useCallback((): Window | null => {
     const w = popup.current;
-    if (w && !w.closed) w.postMessage(msg, appOrigin);
-  }, [appOrigin]);
+    if (w && !w.closed) return w;
+    return getFramePeer();
+  }, []);
+
+  const post = useCallback((msg: Record<string, unknown>) => {
+    peerWindow()?.postMessage(msg, appOrigin);
+  }, [appOrigin, peerWindow]);
 
   const sendSelection = useCallback(() => {
     const ids = selectedGlobalIds(useViewerStore.getState() as never);
@@ -127,7 +134,7 @@ function Tool({ cde, app }: { cde: string; app: string }) {
   // Messages from the popup: only from that window and exactly its origin.
   useEffect(() => {
     const onMessage = (ev: MessageEvent) => {
-      if (!isFromApp(ev, popup.current, appOrigin)) return;
+      if (!isFromApp(ev, popup.current, appOrigin) && !isFromApp(ev, getFramePeer(), appOrigin)) return;
       const parsed = parseAppMessage(ev.data);
       if (!parsed.ok) { console.warn(`[ginnung] dropped a message from the app: ${parsed.reason}`); return; }
       const msg = parsed.msg;
@@ -148,6 +155,9 @@ function Tool({ cde, app }: { cde: string; app: string }) {
   }, [api, appOrigin, loadVersion, modelRef, post, sendSelection]);
 
   useEffect(() => useViewerStore.subscribe(sendSelection), [sendSelection]);
+
+  // A frame that (re)loads is a new app instance: it announces itself again.
+  useEffect(() => subscribeFramePeer(() => { appReady.current = false; }), []);
 
   const openApp = useCallback(() => {
     setError('');
