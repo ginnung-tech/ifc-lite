@@ -4,5 +4,7 @@
   "selection-duplicate.json": "message",
   "model-updated-no-version.json": "message",
   "ready-extra-field.json": "message",
-  "unknown-type.json": "message"
+  "unknown-type.json": "message",
+  "selection-element-bad-class.json": "message",
+  "selection-element-extra-field.json": "message"
 }

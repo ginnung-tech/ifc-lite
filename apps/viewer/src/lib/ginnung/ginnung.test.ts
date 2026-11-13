@@ -21,6 +21,10 @@ test('viewer-embed contract: app messages parse, viewer messages match the fixtu
   assert.deepEqual(helloMessage({ name: 'carport.ifc', document_id: DOC, version_index: 3 }), fixture('hello.json'));
   assert.deepEqual(selectionMessage([G1, G2], { name: 'carport.ifc', document_id: DOC, version_index: 3 }), fixture('selection.json'));
   assert.deepEqual(selectionMessage([]), fixture('selection-cleared.json'));
+  assert.deepEqual(
+    selectionMessage([G1], undefined, [{ global_id: G1, name: 'Basic Wall:Partition 100', ifc_class: 'IfcWall' }]),
+    fixture('selection-with-elements.json'),
+  );
 });
 
 test('viewer-embed contract: every invalid fixture is refused by the strict parser', () => {
@@ -30,6 +34,14 @@ test('viewer-embed contract: every invalid fixture is refused by the strict pars
   // the viewer-to-app messages are not app messages
   assert.equal(parseAppMessage(fixture('selection.json')).ok, false);
   assert.equal(parseAppMessage({ v: 1, type: 'ready', auth: 'signed-in', token: 'x' }).ok, false);
+});
+
+test('selectionMessage only describes elements that are in the selection, and never sends a class that is not an IFC class', () => {
+  assert.equal(selectionMessage([G1], undefined, [{ global_id: G2, name: 'not selected' }]).elements, undefined);
+  assert.deepEqual(
+    selectionMessage([G1], undefined, [{ global_id: G1, name: 'Wall', ifc_class: 'wall; drop' }]).elements,
+    [{ global_id: G1, name: 'Wall' }],
+  );
 });
 
 test('selectionMessage refuses what the contract refuses instead of sending it', () => {
@@ -54,11 +66,28 @@ const sel = (ids: Record<number, string>, refs: Array<[string, number]>, single?
 
 test('selectedGlobalIds maps the selection to GlobalIds, skips unknown ones and dedupes', () => {
   const r = selectedGlobalIds(sel({ 1: G1, 2: G2 }, [['m1', 1], ['m1', 2], ['m1', 1], ['m1', 99]]));
-  assert.deepEqual(r, { globalIds: [G1, G2], truncated: false });
+  assert.deepEqual(r, { globalIds: [G1, G2], elements: [{ global_id: G1 }, { global_id: G2 }], truncated: false });
   assert.deepEqual(selectedGlobalIds(sel({ 5: G1 }, [], ['m1', 5])).globalIds, [G1]);
   assert.deepEqual(selectedGlobalIds(sel({}, [])).globalIds, []);
   // a value that is not a 22-character GlobalId is never sent
   assert.deepEqual(selectedGlobalIds(sel({ 1: 'abc' }, [['m1', 1]])).globalIds, []);
+});
+
+test('selectedGlobalIds carries the name and class of each element, and drops a class that is not an IFC class', () => {
+  const src = {
+    selectedEntity: null,
+    selectedEntities: [{ modelId: 'm1', expressId: 1 }, { modelId: 'm1', expressId: 2 }],
+    models: new Map([['m1', { ifcDataStore: { entities: {
+      getGlobalId: (n: number) => ({ 1: G1, 2: G2 } as Record<number, string>)[n] ?? '',
+      getName: (n: number) => (n === 1 ? 'Wall 1' : ''),
+      getTypeName: (n: number) => (n === 1 ? 'IfcWall' : 'wall'),
+    } } }]]),
+  };
+  const r = selectedGlobalIds(src);
+  assert.deepEqual(r.globalIds, [G1, G2]);
+  assert.deepEqual(r.elements, [{ global_id: G1, name: 'Wall 1', ifc_class: 'IfcWall' }, { global_id: G2 }]);
+  // an element nobody can name is not sent as an element
+  assert.deepEqual(selectionMessage(r.globalIds, undefined, r.elements).elements, [{ global_id: G1, name: 'Wall 1', ifc_class: 'IfcWall' }]);
 });
 
 test('selectedGlobalIds cuts at 512 and says so', () => {

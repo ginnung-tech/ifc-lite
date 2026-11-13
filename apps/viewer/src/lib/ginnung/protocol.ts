@@ -30,6 +30,13 @@ export interface ModelRef {
   version_index?: number;
 }
 
+/** What the viewer knows about one selected element. */
+export interface SelectionElement {
+  global_id: string;
+  name?: string;
+  ifc_class?: string;
+}
+
 export type AppMessage =
   | { type: 'ready'; auth: 'signed-in' | 'signed-out'; project?: string }
   | { type: 'model.updated'; project: string; documentId: string; versionIndex: number };
@@ -38,11 +45,24 @@ export function helloMessage(model?: ModelRef): Record<string, unknown> {
   return model ? { v: EMBED_VERSION, type: 'hello', model } : { v: EMBED_VERSION, type: 'hello' };
 }
 
-/** Selection message. Throws on a malformed id or too many: the caller sends at most MAX_SELECTION. */
-export function selectionMessage(globalIds: readonly string[], model?: ModelRef): Record<string, unknown> {
+/**
+ * Selection message. Throws on a malformed id or too many: the caller sends at
+ * most MAX_SELECTION. `elements` (names and IFC classes) are optional and only
+ * sent for ids that are in the selection.
+ */
+export function selectionMessage(globalIds: readonly string[], model?: ModelRef, elements: readonly SelectionElement[] = []): Record<string, unknown> {
   if (globalIds.length > MAX_SELECTION) throw new RangeError(`selection has ${globalIds.length} ids, the contract allows ${MAX_SELECTION}`);
   for (const g of globalIds) if (!GLOBAL_ID.test(g)) throw new TypeError('selection holds a value that is not an IFC GlobalId');
-  const msg: Record<string, unknown> = { v: EMBED_VERSION, type: 'selection', global_ids: [...new Set(globalIds)] };
+  const ids = [...new Set(globalIds)];
+  const msg: Record<string, unknown> = { v: EMBED_VERSION, type: 'selection', global_ids: ids };
+  const named = elements.filter((e) => ids.includes(e.global_id) && (e.name || e.ifc_class));
+  if (named.length > 0) {
+    msg.elements = named.map((e) => ({
+      global_id: e.global_id,
+      ...(e.name ? { name: e.name.slice(0, 200) } : {}),
+      ...(e.ifc_class && /^Ifc[A-Za-z0-9]{1,80}$/.test(e.ifc_class) ? { ifc_class: e.ifc_class } : {}),
+    }));
+  }
   if (model) msg.model = model;
   return msg;
 }
