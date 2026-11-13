@@ -1,0 +1,7 @@
+{
+  "ready.json": "ready",
+  "hello.json": "hello",
+  "selection.json": "selection",
+  "selection-cleared.json": "selection",
+  "model-updated.json": "modelUpdated"
+}

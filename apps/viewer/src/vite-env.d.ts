@@ -7,6 +7,9 @@
 
 interface ImportMetaEnv {
   /** Local OCI registry demo, using the development server's same-origin proxy. */
+  /** Ginnung tool (demo): the document service /cde address and the app address. Both unset = no tool. */
+  readonly VITE_GINNUNG_CDE_URL?: string;
+  readonly VITE_GINNUNG_APP_URL?: string;
   readonly VITE_REGISTRY_ENABLED?: string;
   readonly VITE_REGISTRY_ADDRESS?: string;
   /** Enable reviewed model reports only after the report service is deployed and qualified. */

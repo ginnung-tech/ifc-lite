@@ -1,0 +1,8 @@
+{
+  "wrong-version.json": "message",
+  "selection-bad-globalid.json": "message",
+  "selection-duplicate.json": "message",
+  "model-updated-no-version.json": "message",
+  "ready-extra-field.json": "message",
+  "unknown-type.json": "message"
+}
