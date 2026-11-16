@@ -6,7 +6,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import { useViewerStore } from '@/store';
 import { useIfcLoader } from '@/hooks/useIfcLoader';
 import { GinnungApi, GinnungApiError, type DocumentRow, type VersionRow } from '@/lib/ginnung/api';
-import { bcfBaseFrom, docsToLoad, modelForSelection, modelRefOf, newerHeads, type LoadedDoc } from '@/lib/ginnung/connection-logic';
+import { bcfBaseFrom, docsToLoad, followAppProject, modelForSelection, modelRefOf, newerHeads, type LoadedDoc } from '@/lib/ginnung/connection-logic';
 import { getFramePeer, subscribeFramePeer } from '@/lib/ginnung/peer';
 import { helloMessage, isFromApp, parseAppMessage, selectionMessage } from '@/lib/ginnung/protocol';
 import { selectedGlobalIds } from '@/lib/ginnung/selection';
@@ -50,6 +50,8 @@ function Controller({ cde, app }: { cde: string; app: string }) {
   const etag = useRef<string | undefined>(undefined);
   const popup = useRef<Window | null>(null);
   const appReady = useRef(false);
+  /** The project the app says it is on (`ready.project`); the viewer follows it. */
+  const appProject = useRef<string | undefined>(undefined);
   const generation = useRef(0);
   const appOrigin = new URL(app).origin;
 
@@ -201,7 +203,8 @@ function Controller({ cde, app }: { cde: string; app: string }) {
       apiRef.current = a;
       writeToken(token);
       const projects = rows.map((p) => ({ id: p.project_id, name: p.name }));
-      const first = projects[0]!;
+      // Start on the app's project when it already said which (else the first).
+      const first = projects.find((p) => p.id === appProject.current) ?? projects[0]!;
       projectRef.current = first;
       loaded.current = new Map();
       etag.current = undefined;
@@ -273,8 +276,31 @@ function Controller({ cde, app }: { cde: string; app: string }) {
       const msg = parsed.msg;
       if (msg.type === 'ready') {
         appReady.current = true;
-        sendHello();
-        sendSelection();
+        appProject.current = msg.auth === 'signed-in' ? msg.project : undefined;
+        const follow = followAppProject(appProject.current, projectRef.current?.id, getPaneState().projects);
+        if (follow.kind === 'stay') {
+          sendHello();
+          sendSelection();
+          return;
+        }
+        // The app moved to another project: show that one. Its models' hello is sent
+        // once they are loaded (loadProject), never the old project's model meanwhile.
+        console.info(`[ginnung] following the app to project ${follow.id}`);
+        const switchTo = async (): Promise<void> => {
+          if (follow.kind === 'relist') {
+            const a = apiRef.current;
+            if (!a) return;
+            const projects = (await a.listProjects()).map((p) => ({ id: p.project_id, name: p.name }));
+            setPaneState({ projects });
+            if (!projects.some((p) => p.id === follow.id)) {
+              console.warn(`[ginnung] the app is on project ${follow.id}, which this token cannot see`);
+              post(helloMessage());
+              return;
+            }
+          }
+          await selectProject(follow.id);
+        };
+        void switchTo().catch((e) => setPaneState({ error: say(e) }));
         return;
       }
       const a = apiRef.current;
@@ -292,7 +318,7 @@ function Controller({ cde, app }: { cde: string; app: string }) {
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [appOrigin, sendHello, sendSelection, showDoc, refreshBcf]);
+  }, [appOrigin, sendHello, sendSelection, showDoc, refreshBcf, selectProject, post]);
 
   useEffect(() => useViewerStore.subscribe(sendSelection), [sendSelection]);
 

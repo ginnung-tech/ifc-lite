@@ -78,3 +78,20 @@ export function newerHeads(
     })
     .map((h) => h.document_id);
 }
+
+/**
+ * What to do when the app says which project it is on (`ready.project`): the
+ * viewer follows the app. `stay` when it already shows that project (or the app
+ * names none); `select` when it knows the project; `relist` when it does not (a
+ * project made after the viewer connected): list the projects again, then select.
+ */
+export type ProjectFollow = { kind: 'stay' } | { kind: 'select'; id: string } | { kind: 'relist'; id: string };
+
+export function followAppProject(
+  appProject: string | undefined,
+  current: string | undefined,
+  known: ReadonlyArray<{ id: string }>,
+): ProjectFollow {
+  if (!appProject || appProject === current) return { kind: 'stay' };
+  return known.some((p) => p.id === appProject) ? { kind: 'select', id: appProject } : { kind: 'relist', id: appProject };
+}

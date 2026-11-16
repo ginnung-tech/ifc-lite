@@ -4,7 +4,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { bcfBaseFrom, docsToLoad, modelForSelection, modelRefOf, newerHeads, type LoadedDoc } from './connection-logic';
+import { bcfBaseFrom, docsToLoad, followAppProject, modelForSelection, modelRefOf, newerHeads, type LoadedDoc } from './connection-logic';
 
 const D1 = '4f1d6c52-8a39-4e0b-9d57-3c2a1b7e9f10';
 const D2 = '9a8b7c6d-1111-4222-8333-444455556666';
@@ -42,4 +42,13 @@ test('newerHeads names the documents whose head is ahead of the viewer, and igno
     { document_id: 'not-loaded', version_index: 9 },
   ];
   assert.deepEqual(newerHeads(heads, loaded), [D1]);
+});
+
+test('the viewer follows the project the app is on', () => {
+  const known = [{ id: 'P0001' }, { id: 'P0003' }];
+  assert.deepEqual(followAppProject('P0003', 'P0001', known), { kind: 'select', id: 'P0003' });
+  assert.deepEqual(followAppProject('P0001', 'P0001', known), { kind: 'stay' });
+  assert.deepEqual(followAppProject(undefined, 'P0001', known), { kind: 'stay' });
+  // A project made after the viewer listed them: list again, then select.
+  assert.deepEqual(followAppProject('P0007', 'P0001', known), { kind: 'relist', id: 'P0007' });
 });
